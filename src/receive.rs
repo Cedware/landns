@@ -1,33 +1,30 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use anyhow::Context;
-use bytes::{Bytes, BytesMut};
-use log::info;
+use bytes::{BytesMut};
+use log::{error, info};
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UdpSocket;
-use crate::read_host_name::read_host_name;
+use crate::sig::Signer;
 
 const HOSTS_FILE: &str = "/etc/hosts";
 
-fn get_host_name(buffer: &mut BytesMut) -> Option<anyhow::Result<String>> {
+fn get_host_name(buffer: &mut BytesMut, signer: &dyn Signer) -> Option<anyhow::Result<String>> {
     buffer.windows(2)
         .position(|w| w == b"\r\n")
         .map(|p| {
             let mut message = buffer.split_to(p + 2);
             message.truncate(message.len() - 2);
-            String::from_utf8(message.to_vec())
+            let payload = signer.verify(&message)
+                .context("Failed to verify message signature")?;
+            String::from_utf8(payload.into())
                 .context("Failed to convert message from utf8")
         })
 }
 
 async fn update_hosts(hostname: &str, ip: &IpAddr) -> anyhow::Result<()> {
     info!("updating hosts file");
-    let own_host_name = read_host_name().await.context("Failed to read own host name")?;
-    if own_host_name == hostname {
-        info!("received own host name, skipping update");
-        return Ok(());
-    }
     let hosts_file = File::open(HOSTS_FILE).await
         .context(format!("Failed to open hosts file: {}", HOSTS_FILE))?;
     let reader = BufReader::new(hosts_file);
@@ -59,8 +56,9 @@ async fn update_hosts(hostname: &str, ip: &IpAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn receive_host_names(host: &str, port: u16) -> anyhow::Result<()> {
-    let endpoint = format!("{}:{}", host, port);
+pub async fn receive_host_names(own_hostname: &str, local_addr: &IpAddr, port: u16, signer: &dyn Signer) -> anyhow::Result<()>
+{
+    let endpoint = format!("{}:{}", local_addr, port);
     let socket = UdpSocket::bind(&endpoint).await
         .context(format!("Failed to create udp socket: {}", endpoint))?;
     let mut buffer_collection: HashMap<SocketAddr, BytesMut> = HashMap::new();
@@ -68,14 +66,25 @@ pub async fn receive_host_names(host: &str, port: u16) -> anyhow::Result<()> {
         let mut buffer = [0; 1024];
         let (len, addr) = socket.recv_from(&mut buffer).await
             .context("Failed to receive data")?;
-        let mut selected_buffer = buffer_collection.entry(addr).or_default();
+        let selected_buffer = buffer_collection.entry(addr).or_default();
         selected_buffer.extend_from_slice(&buffer[..len]);
-        if let Some(host_name) = get_host_name(selected_buffer) {
+        if let Some(hostname) = get_host_name(selected_buffer, signer) {
             buffer_collection.remove(&addr);
-            let host_name = host_name.context("Failed to extract host name from buffer")?;
-            info!("received host name: {} from: {}", host_name, addr);
-            update_hosts(&host_name, &addr.ip()).await
-                .context("Failed to update hosts file")?;
+            let hostname = match hostname {
+                Err(e) => {
+                    error!("failed to get hostname: {}", e);
+                    continue;
+                },
+                Ok(hostname) => hostname
+            };
+            info!("received host name: {} from: {}", hostname, addr);
+            if own_hostname == hostname {
+                info!("received own host name, skipping update");
+            }
+            else {
+                update_hosts(&hostname, &addr.ip()).await
+                    .context("Failed to update hosts file")?;
+            }
         }
     }
 }
