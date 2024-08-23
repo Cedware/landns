@@ -33,10 +33,9 @@ async fn start() -> anyhow::Result<()> {
     info!("loading configuration");
     let configuration = Configuration::from_env()?;
 
-    let signera = create_signer(&Some("/home/cedrick/.landns/key".to_string())).await.context("Failed to create signer")?;
-    let signerb = create_signer(&Some("/home/cedrick/.landns/key2".to_string())).await.context("Failed to create signer")?;
-    let publish_future = publish_host_name_periodically(interval(Duration::from_secs(60)), configuration.port, &*signera);
-    let receive_future = receive::receive_host_names(&configuration.local_address, configuration.port, &*signerb);
+    let signer = create_signer(&configuration.key_path).await.context("Failed to create signer")?;
+    let publish_future = publish_host_name_periodically(interval(Duration::from_secs(60)), configuration.port, &*signer);
+    let receive_future = receive::receive_host_names(&configuration.local_address, configuration.port, &*signer);
     let (publish_result, receive_result) = join!(publish_future, receive_future);
     receive_result?;
     publish_result?;
