@@ -10,6 +10,7 @@ pub async fn publish_host_name_periodically(mut interval: Interval, port: u16, s
 {
     let target = format!("255.255.255.255:{}", port);
     loop {
+        interval.tick().await;
         let host_name = read_host_name().await.context("Failed to read hostname")?;
         let socket = UdpSocket::bind("0.0.0.0:0").await
             .context("Failed to bind to udp socket")?;
@@ -24,6 +25,5 @@ pub async fn publish_host_name_periodically(mut interval: Interval, port: u16, s
             bytes_send = socket.send_to(&data[bytes_send..], &target).await
                 .context("Failed to send data")?;
         }
-        interval.tick().await;
     }
 }
