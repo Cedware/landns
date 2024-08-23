@@ -7,6 +7,7 @@ use tokio::join;
 use tokio::time::{interval};
 use crate::configuration::Configuration;
 use crate::publish::publish_host_name_periodically;
+use crate::read_host_name::read_host_name;
 use crate::sig::{HmacSigner, Signer, UnsecureSigner};
 
 mod configuration;
@@ -34,8 +35,9 @@ async fn start() -> anyhow::Result<()> {
     let configuration = Configuration::from_env()?;
 
     let signer = create_signer(&configuration.key_path).await.context("Failed to create signer")?;
-    let publish_future = publish_host_name_periodically(interval(Duration::from_secs(60)), configuration.port, &*signer);
-    let receive_future = receive::receive_host_names(&configuration.local_address, configuration.port, &*signer);
+    let own_hostname = read_host_name().await.context("Failed to read host name")?;
+    let publish_future = publish_host_name_periodically(&own_hostname, interval(Duration::from_secs(60)), configuration.port, &*signer);
+    let receive_future = receive::receive_host_names(&own_hostname, &configuration.local_address, configuration.port, &*signer);
     let (publish_result, receive_result) = join!(publish_future, receive_future);
     receive_result?;
     publish_result?;
